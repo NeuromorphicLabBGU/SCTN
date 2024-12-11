@@ -40,6 +40,14 @@ spec = OrderedDict([
     ('log_membrane_potential', boolean),
     ('_membrane_potential_graph', float32[:]),
     ('membrane_sample_max_window', float32[:]),
+
+
+    ('Tw',int32),
+    ('threshold_initial',int32),
+    ('use_dynamic_threshold', boolean),
+    ('spikes_in_window', int32),
+    ('current_threshold', float32),
+
 ])
 
 IDENTITY = 0
@@ -52,7 +60,7 @@ INJECT = 3
 class SCTNeuron:
 
     def __init__(self, synapses_weights, leakage_factor=0, leakage_period=1, leakage_timer=0, theta=0,
-                 activation_function=0, threshold_pulse=0,
+                 activation_function=0, threshold_pulse=0,threshold_initial=0,Tw=20,use_dynamic_threshold=False,
                  identity_const=32767, log_membrane_potential=False, log_rand_gauss_var=False,
                  log_out_spikes=False, membrane_should_reset=True):
         synapses_weights = synapses_weights.astype(np.float64)
@@ -92,8 +100,22 @@ class SCTNeuron:
 
         self.use_clk_input = False
 
+        self.use_dynamic_threshold = use_dynamic_threshold
+        self.threshold_initial = threshold_initial
+        self.Tw=Tw
+        self.current_threshold = threshold_initial
+        self.Tw = Tw
+        self.spikes_in_window = 0
+
     def ctn_cycle(self, pre_spikes, enable):
         emit_spike = self._kernel(pre_spikes, enable)
+
+        if self.membrane_potential > self.current_threshold:
+            emit_spike = 1
+            self.spikes_in_window += 1
+        if self.index % self.Tw == 0:
+            self.update_dynamic_threshold()
+
         self._learn(pre_spikes, emit_spike)
         self._log_cycle(emit_spike)
         return emit_spike
@@ -223,10 +245,41 @@ class SCTNeuron:
                 emit_spike = 0
         return emit_spike
 
+    def update_dynamic_threshold(self):
+        if not self.use_dynamic_threshold:
+            return
+        spikes_per_window = self.spikes_in_window / self.Tw
+
+        previous_threshold=self.current_threshold
+
+        if spikes_per_window > 0.8:
+            self.current_threshold += 1
+        elif spikes_per_window < 0.1 and self.current_threshold > self.threshold_initial:
+            self.current_threshold -= 1
+        self.spikes_in_window = 0
+
+        if self.current_threshold != previous_threshold:
+            print("[Threshold Update] Threshold changed:",
+                  "Previous Threshold:", round(previous_threshold, 2),
+                  "New Threshold:", round(self.current_threshold, 2))
+
+
+
     def _activation_function_binary(self):
-        if self.membrane_potential > self.threshold_pulse:
+        if self.use_dynamic_threshold:
+            threshold = self.current_threshold
+        else:
+            threshold = self.threshold_initial
+
+        if self.membrane_potential > threshold:
             return 1
         return 0
+
+
+    # def _activation_function_binary(self):
+    #     if self.membrane_potential > self.threshold_pulse:
+    #         return 1
+    #     return 0
 
     def _activation_function_sigmoid(self):
         self.rand_gauss_var = 0
